@@ -1,19 +1,22 @@
-import { SlashCommandBuilder } from 'discord.js';
-import { successEmbed, warningEmbed } from '../../utils/embeds.js';
+import { SlashCommandBuilder, PermissionFlagsBits, PermissionsBitField, ChannelType } from 'discord.js';
+import { createEmbed, successEmbed, infoEmbed, warningEmbed } from '../../utils/embeds.js';
+import { logEvent } from '../../utils/moderation.js';
 import { logger } from '../../utils/logger.js';
+import { getColor } from '../../config/bot.js';
 
 import { InteractionHelper } from '../../utils/interactionHelper.js';
-const rand = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
-const EMBED_DESCRIPTION_LIMIT = 4096;
+import { replyUserError, ErrorTypes } from '../../utils/errorHandler.js';
 
 // Import your central PostgreSQL pool client
-// Adjust this path to wherever your db setup file is located
+// Adjust this relative path to where your db connection pool file is located
 import pool from '../../database/postgres.js'; 
 
 export default {
     data: new SlashCommandBuilder()
         .setName('unjail')
-        .setDescription('Restores a jailed member back to their normal state.')
+        .setDescription('Restores a jailed member back to their normal state and restores their old roles.')
+        .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
+        .setDMPermission(false)
         .addUserOption(option => 
             option.setName('target')
                 .setDescription('The member to unjail')
@@ -28,28 +31,24 @@ export default {
                 .setRequired(false)),
 
     async execute(interaction) {
-        // Ephemeral reply so staff interactions remain private
-        await interaction.deferReply({ flags: 64 }); // MessageFlags.Ephemeral is 1 << 6 or 64
+        // Safe ephemeral flag usage to bypass MessageFlags property breaking changes
+        await interaction.deferReply({ flags: 64 });
 
         const targetUser = interaction.options.getUser('target');
         const restoreRoles = interaction.options.getBoolean('restore-roles');
         const reason = interaction.options.getString('reason') || 'No reason provided';
         const guild = interaction.guild;
 
-        // Fetch the member from cache or API safely
+        // Fetch the member safely from cache/API
         const member = await guild.members.fetch(targetUser.id).catch(() => null);
         if (!member) {
-            return interaction.editReply({ 
-                embeds: [warningEmbed('Target user was not found or is no longer in this server.')] 
-            });
+            return replyUserError(interaction, ErrorTypes.USER_NOT_FOUND, 'Target user is not in this server.');
         }
 
-        // Find the "Jailed" role to verify active jail status
+        // Find the "Jailed" role to verify status
         const jailRole = guild.roles.cache.find(r => r.name.toLowerCase() === 'jailed');
         if (!jailRole || !member.roles.cache.has(jailRole.id)) {
-            return interaction.editReply({ 
-                embeds: [warningEmbed('This user does not currently have the Jailed role.')] 
-            });
+            return replyUserError(interaction, ErrorTypes.GENERIC_ERROR, 'This user is not currently jailed.');
         }
 
         try {
@@ -59,28 +58,28 @@ export default {
                 const dbResult = await pool.query(queryText, [guild.id, targetUser.id]);
                 
                 let rolesToRestore = [];
+                // CRITICAL FIX: Must use dbResult.rows[0].old_roles, NOT dbResult.rows.old_roles
                 if (dbResult.rows.length > 0 && dbResult.rows[0].old_roles) {
-                    // Filter out any roles deleted from the server while they were locked up
+                    // Filter out any roles that might have been deleted from the server while they were jailed
                     rolesToRestore = dbResult.rows[0].old_roles.filter(roleId => guild.roles.cache.has(roleId));
                 }
 
-                // 2. Overwrite user roles completely (removes jail role + restores old ones)
+                // 2. Put old roles back on the member (this overwrites the jail role completely)
                 await member.roles.set(rolesToRestore, `Unjailed by ${interaction.user.tag}. Reason: ${reason}`);
             } else {
-                // Just remove the jail role safely without re-applying old ones
+                // Just strip the jail role without adding back previous ones
                 await member.roles.remove(jailRole, `Unjailed by ${interaction.user.tag} (No role restore). Reason: ${reason}`);
             }
 
             // 3. Delete the tracking row from your PostgreSQL table
             await pool.query('DELETE FROM jail_system WHERE guild_id = $1 AND user_id = $2', [guild.id, targetUser.id]);
 
-            // 4. Safely DM the target user with an embed notification 
-            // Built directly via successEmbed style format
-            const releaseMessage = `You have been released from jail in **${guild.name}**.\n\n**Reason:** ${reason}\n**Roles Restored:** ${restoreRoles ? 'Yes' : 'No'}`;
-            
-            // Safety check against character truncation constraints
-            const cleanMessage = releaseMessage.substring(0, EMBED_DESCRIPTION_LIMIT);
-            const dmEmbed = successEmbed(cleanMessage);
+            // 4. Send the DM Notification to the user safely
+            const dmEmbed = createEmbed({
+                title: '🔓 You Have Been Unjailed',
+                description: `You have been released from jail in **${guild.name}**.\n\n**Reason:** ${reason}\n**Roles Restored:** ${restoreRoles ? 'Yes' : 'No'}`,
+                color: getColor('success') || '#00ff00'
+            });
 
             let dmSent = true;
             await targetUser.send({ embeds: [dmEmbed] }).catch(() => {
@@ -88,19 +87,25 @@ export default {
                 dmSent = false;
             });
 
-            // 5. Send success response back to the moderator
-            const outcomeText = restoreRoles 
+            // 5. Log the moderation event via your handler
+            await logEvent(guild, {
+                action: 'Unjail',
+                target: targetUser,
+                executor: interaction.user,
+                reason: `${reason} (Restore Roles: ${restoreRoles})`
+            });
+
+            // 6. Confirm success to the moderator
+            const baseMsg = restoreRoles 
                 ? `Successfully unjailed ${targetUser.tag} and restored their roles.` 
                 : `Successfully unjailed ${targetUser.tag} without restoring roles.`;
 
-            const userFeedback = dmSent ? outcomeText : `${outcomeText} *(User has private messages disabled)*`;
-            await interaction.editReply({ embeds: [successEmbed(userFeedback)] });
+            const finalMsg = dmSent ? baseMsg : `${baseMsg} *(User's DMs are closed)*`;
+            await interaction.editReply({ embeds: [successEmbed(finalMsg)] });
 
         } catch (error) {
             logger.error(`Failed to unjail user ${targetUser.id} via PostgreSQL:`, error);
-            await interaction.editReply({ 
-                embeds: [warningEmbed('An internal error occurred while trying to process the database unjail workflow.')] 
-            });
+            return replyUserError(interaction, ErrorTypes.INTERNAL_ERROR, 'An error occurred while executing the PostgreSQL unjail sequence.');
         }
     }
 };
