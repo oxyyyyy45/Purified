@@ -7,6 +7,9 @@ import { getColor } from '../../config/bot.js';
 import { InteractionHelper } from '../../utils/interactionHelper.js';
 import { replyUserError, ErrorTypes } from '../../utils/errorHandler.js';
 
+// Import your Jail database model
+import JailModel from '../../database/models/Jail.js';
+
 export default {
     data: new SlashCommandBuilder()
         .setName('unjail')
@@ -17,6 +20,10 @@ export default {
             option.setName('target')
                 .setDescription('The member to unjail')
                 .setRequired(true))
+        .addBooleanOption(option =>
+            option.setName('restore-roles')
+                .setDescription('Whether to restore their original roles from the database')
+                .setRequired(true))
         .addStringOption(option => 
             option.setName('reason')
                 .setDescription('The reason for unjailing this member')
@@ -26,6 +33,7 @@ export default {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
         const targetUser = interaction.options.getUser('target');
+        const restoreRoles = interaction.options.getBoolean('restore-roles');
         const reason = interaction.options.getString('reason') || 'No reason provided';
         const guild = interaction.guild;
 
@@ -42,24 +50,40 @@ export default {
         }
 
         try {
-            // Note: Since role data needs persistence across restarts, you would normally 
-            // pull the 'previousRoles' array from your database setup here.
-            // As a safe alternative, we remove the jail role. If you want to auto-assign 
-            // a base member role on release, you can look it up here.
-            
-            // Remove the Jailed role
-            await member.roles.remove(jailRole, `Unjailed by ${interaction.user.tag}. Reason: ${reason}`);
+            if (restoreRoles) {
+                // 1. Look up the saved role data from the database
+                const jailData = await JailModel.findOne({ guildId: guild.id, userId: targetUser.id });
+                
+                let rolesToRestore = [];
+                if (jailData && jailData.oldRoles.length > 0) {
+                    // Filter out any roles that might have been deleted from the server while they were jailed
+                    rolesToRestore = jailData.oldRoles.filter(roleId => guild.roles.cache.has(roleId));
+                }
+
+                // 2. Put old roles back on the member (this clears the jail role and restores old ones)
+                await member.roles.set(rolesToRestore, `Unjailed by ${interaction.user.tag}. Reason: ${reason}`);
+            } else {
+                // Just strip the jail role without adding back previous ones
+                await member.roles.remove(jailRole, `Unjailed by ${interaction.user.tag} (No role restore). Reason: ${reason}`);
+            }
+
+            // 3. Clear the jail record from your database regardless of the choice
+            await JailModel.deleteOne({ guildId: guild.id, userId: targetUser.id });
 
             // Log the moderation event
             await logEvent(guild, {
                 action: 'Unjail',
                 target: targetUser,
                 executor: interaction.user,
-                reason: reason
+                reason: `${reason} (Restore Roles: ${restoreRoles})`
             });
 
             // Confirm success to the moderator
-            const responseEmbed = successEmbed(`Successfully unjailed ${targetUser.tag}.`);
+            const msgString = restoreRoles 
+                ? `Successfully unjailed ${targetUser.tag} and restored their roles.` 
+                : `Successfully unjailed ${targetUser.tag} without restoring roles.`;
+
+            const responseEmbed = successEmbed(msgString);
             await interaction.editReply({ embeds: [responseEmbed] });
 
         } catch (error) {
