@@ -13,7 +13,7 @@ import JailModel from '../../database/models/Jail.js';
 export default {
     data: new SlashCommandBuilder()
         .setName('unjail')
-        .setDescription('Restores a jailed member back to their normal state.')
+        .setDescription('Restores a jailed member back to their normal state and notifies them via DM.')
         .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
         .setDMPermission(false)
         .addUserOption(option => 
@@ -70,7 +70,19 @@ export default {
             // 3. Clear the jail record from your database regardless of the choice
             await JailModel.deleteOne({ guildId: guild.id, userId: targetUser.id });
 
-            // Log the moderation event
+            // 4. Send the DM Notification to the user before they can potentially leave or block the bot
+            const dmEmbed = createEmbed({
+                title: '🔓 You Have Been Unjailed',
+                description: `You have been released from jail in **${guild.name}**.\n\n**Reason:** ${reason}\n**Roles Restored:** ${restoreRoles ? 'Yes' : 'No'}`,
+                color: getColor('success') || '#00ff00'
+            });
+
+            // Safe send block to avoid crashing if the user has DMs closed
+            await targetUser.send({ embeds: [dmEmbed] }).catch(() => {
+                logger.warn(`Could not send unjail DM notification to user ${targetUser.id}. DMs are likely closed.`);
+            });
+
+            // 5. Log the moderation event
             await logEvent(guild, {
                 action: 'Unjail',
                 target: targetUser,
@@ -78,7 +90,7 @@ export default {
                 reason: `${reason} (Restore Roles: ${restoreRoles})`
             });
 
-            // Confirm success to the moderator
+            // 6. Confirm success to the moderator
             const msgString = restoreRoles 
                 ? `Successfully unjailed ${targetUser.tag} and restored their roles.` 
                 : `Successfully unjailed ${targetUser.tag} without restoring roles.`;
