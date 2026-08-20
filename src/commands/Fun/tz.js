@@ -5,7 +5,7 @@ const GEOCODING_URL = "https://open-meteo.com";
 
 export default {
     name: "tz",
-    description: "Display the absolute local time of a city so it is visible to everyone universally.",
+    description: "Display the actual local time of a city so it is visible to everyone universally as static text.",
     category: "Utility",
 
     async execute(message, args, config, client) {
@@ -36,48 +36,51 @@ export default {
                 return message.reply(`⚠️ Found **${cityDisplay}**, but could not resolve its timezone identifier.`);
             }
 
-            // 2. Calculate the specific absolute timestamp for that city
-            // This reads the clock time of the target timezone and matches it to a global UNIX timestamp
+            // 2. Format static time strings based on the target timezone
+            // This reads the raw time on the wall in that exact city and outputs it as text.
             const now = new Date();
-            
-            // Get target city's current local date/time parts using its specific timezone rule
-            const formatter = new Intl.DateTimeFormat('en-US', {
+
+            const staticTime = now.toLocaleTimeString('en-US', {
                 timeZone: timezone,
-                year: 'numeric', month: 'numeric', day: 'numeric',
-                hour: 'numeric', minute: 'numeric', second: 'numeric',
-                hour12: false
+                hour: 'numeric',
+                minute: '2-digit',
+                hour12: true
             });
-            
-            const parts = formatter.formatToParts(now);
-            const getPart = (type) => parts.find(p => p.type === type).value;
 
-            // Reconstruct the exact date object string matching the target city's wall clock time
-            const targetWallClockDate = new Date(
-                `${getPart('year')}-${getPart('month')}-${getPart('day')}T${getPart('hour')}:${getPart('minute')}:${getPart('second')}`
-            );
+            const staticDate = now.toLocaleDateString('en-US', {
+                timeZone: timezone,
+                weekday: 'long',
+                month: 'short',
+                day: 'numeric',
+                year: 'numeric'
+            });
 
-            // Turn it into a absolute UNIX value for Discord text engines to render
-            const absoluteCityTimestamp = Math.floor(targetWallClockDate.getTime() / 1000);
+            // 3. Generate dynamic GMT offset string (e.g., "GMT-5" or "GMT+9")
+            const parts = new Intl.DateTimeFormat('en-US', {
+                timeZone: timezone,
+                timeZoneName: 'shortOffset'
+            }).formatToParts(now);
+            const gmtOffset = parts.find(p => p.type === 'timeZoneName')?.value || 'GMT';
 
-            // 3. Build and dispatch the finalized global layout
+            // 4. Build and dispatch the finalized universal embed layout
             const embed = createEmbed({
-                title: `🗺️ Timezone Converter: ${cityDisplay}, ${country}`,
-                description: `This embed shows the actual current time inside that city. **Everyone reading this sees the exact same local time.**`
+                title: `🗺️ Timezone Checker: ${cityDisplay}, ${country}`,
+                description: `This displays the actual wall-clock time right now in that region.`
             })
             .addFields(
                 { 
-                    name: "🕒 Current Wall Clock Time", 
-                    value: `### <t:${absoluteCityTimestamp}:t>`, 
+                    name: "🕒 Current Local Time", 
+                    value: `## ⏰ ${staticTime}`, 
                     inline: true 
                 },
                 { 
-                    name: "📅 Current Calendar Date", 
-                    value: `<t:${absoluteCityTimestamp}:d>`, 
+                    name: "📅 Current Date", 
+                    value: `📅 ${staticDate}`, 
                     inline: true 
                 },
                 { 
-                    name: "🌐 Timezone Name", 
-                    value: `\`${timezone}\``, 
+                    name: "🌐 Timezone Region", 
+                    value: `\`${timezone}\` (${gmtOffset})`, 
                     inline: false 
                 }
             )
