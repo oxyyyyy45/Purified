@@ -1,72 +1,111 @@
-import { SlashCommandBuilder } from 'discord.js';
 import { createEmbed } from '../../utils/embeds.js';
 import { logger } from '../../utils/logger.js';
-import { InteractionHelper } from '../../utils/interactionHelper.js';
+
 export default {
-    data: new SlashCommandBuilder()
-    .setName("userinfo")
-    .setDescription("Get detailed information about a user")
-    .addUserOption((option) =>
-      option
-        .setName("target")
-        .setDescription("The user to inspect (defaults to you)"),
-    ),
+    name: "userinfo",
+    description: "Get detailed information about a user",
+    category: "Utility",
 
-  async execute(interaction) {
-    const deferSuccess = await InteractionHelper.safeDefer(interaction);
-    if (!deferSuccess) {
-      logger.warn(`UserInfo interaction defer failed`, {
-        userId: interaction.user.id,
-        guildId: interaction.guildId,
-        commandName: 'userinfo'
-      });
-      return;
-    }
+    async execute(message, args, config, client) {
+        // Fallback for DM execution safety
+        const guild = message.guild;
+        if (!guild) {
+            return message.reply("This command can only be used within a server.");
+        }
 
-    const user = interaction.options.getUser("target") || interaction.user;
-    const member = interaction.guild.members.cache.get(user.id);
+        try {
+            let targetUser = message.author;
 
-    const createdTimestamp = Math.floor(user.createdAt.getTime() / 1000);
-    const joinedTimestamp = member?.joinedAt ? Math.floor(member.joinedAt.getTime() / 1000) : null;
+            // Robust target matching (Mentions, IDs, or usernames)
+            if (args && args.length > 0) {
+                const search = args.join(' ');
+                
+                // 1. Check for a direct mention or raw ID
+                const mentionOrId = message.mentions.users.first() || client.users.cache.get(args[0]);
+                
+                if (mentionOrId) {
+                    targetUser = mentionOrId;
+                } else {
+                    // 2. Search cache by username/display name
+                    const foundMember = guild.members.cache.find(m => 
+                        m.user.username.toLowerCase().includes(search.toLowerCase()) || 
+                        m.displayName.toLowerCase().includes(search.toLowerCase())
+                    );
+                    if (foundMember) targetUser = foundMember.user;
+                }
+            }
 
-    const embed = createEmbed({ title: `User Info: ${user.username}` })
-      .setThumbnail(user.displayAvatarURL({ size: 256 }))
-      .addFields(
-        { name: "ID", value: user.id, inline: true },
-        { name: "Bot", value: user.bot ? "Yes" : "No", inline: true },
-        {
-          name: "Roles",
-          value:
-            member && member.roles.cache.size > 1
-              ? member.roles.cache
-                  .map((r) => r.name)
-                  .slice(0, 5)
-                  .join(",")
-              : "None",
-          inline: true,
-        },
-        {
-          name: "Account Created",
-          value: `<t:${createdTimestamp}:R>`,
-          inline: false,
-        },
-        {
-          name: "Joined Server",
-          value: joinedTimestamp ? `<t:${joinedTimestamp}:R>` : "Not in server",
-          inline: false,
-        },
-        {
-          name: "Highest Role",
-          value: member?.roles?.highest?.name || "None",
-          inline: true,
-        },
-      );
+            // Fetch member cleanly from the API if they are uncached
+            const member = await guild.members.fetch(targetUser.id).catch(() => null);
 
-    await InteractionHelper.safeEditReply(interaction, { embeds: [embed] });
-    logger.info(`UserInfo command executed`, {
-      userId: interaction.user.id,
-      targetUserId: user.id,
-      guildId: interaction.guildId
-    });
-  },
+            const createdTimestamp = Math.floor(targetUser.createdAt.getTime() / 1000);
+            const joinedTimestamp = member?.joinedAt ? Math.floor(member.joinedAt.getTime() / 1000) : null;
+
+            // Refined Role Display Logic
+            let roleDisplay = "None";
+            let keyPermissions = "None";
+
+            if (member) {
+                // Filter out @everyone and map into tag references
+                const roles = member.roles.cache
+                    .filter(r => r.id !== guild.id)
+                    .sort((a, b) => b.position - a.position);
+
+                if (roles.size > 0) {
+                    const sliceCount = 5;
+                    const mappedRoles = roles.map(r => r.toString());
+                    roleDisplay = mappedRoles.slice(0, sliceCount).join(", ");
+                    if (roles.size > sliceCount) {
+                        roleDisplay += ` and ${roles.size - sliceCount} more...`;
+                    }
+                }
+
+                // Identify critical administrative flags
+                const perms = [];
+                if (member.permissions.has("Administrator")) perms.push("Administrator");
+                if (member.permissions.has("ManageGuild")) perms.push("Manage Server");
+                if (member.permissions.has("BanMembers")) perms.push("Ban Members");
+                if (member.permissions.has("KickMembers")) perms.push("Kick Members");
+                if (perms.length > 0) keyPermissions = perms.join(", ");
+            }
+
+            const embed = createEmbed({ 
+                title: `User Info: ${targetUser.username}`,
+                description: `**User ID:** \`${targetUser.id}\``
+            })
+            .setThumbnail(targetUser.displayAvatarURL({ size: 256, forceStatic: false }))
+            .addFields(
+                { name: "🤖 Bot?", value: targetUser.bot ? "Yes" : "No", inline: true },
+                { name: "👑 Highest Role", value: member?.roles?.highest?.id === guild.id ? "None" : `${member?.roles?.highest || "None"}`, inline: true },
+                { name: "🛡️ Key Permissions", value: keyPermissions, inline: false },
+                { name: "🎭 Roles Displayed", value: roleDisplay, inline: false },
+                {
+                    name: "📅 Account Created",
+                    value: `<t:${createdTimestamp}:F> (<t:${createdTimestamp}:R>)`,
+                    inline: false,
+                },
+                {
+                    name: "📥 Joined Server",
+                    value: joinedTimestamp ? `<t:${joinedTimestamp}:F> (<t:${joinedTimestamp}:R>)` : "Not a member of this server",
+                    inline: false,
+                },
+            );
+
+            await message.channel.send({ embeds: [embed] });
+
+            logger.info(`UserInfo prefix command executed`, {
+                userId: message.author.id,
+                targetUserId: targetUser.id,
+                guildId: guild.id
+            });
+
+        } catch (error) {
+            logger.error(`UserInfo prefix command failed`, {
+                userId: message.author.id,
+                guildId: guild.id,
+                error: error.message
+            });
+            await message.reply("An error occurred while fetching user data.");
+        }
+    },
 };
