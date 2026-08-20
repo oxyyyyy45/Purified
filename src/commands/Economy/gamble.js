@@ -1,131 +1,76 @@
-import { SlashCommandBuilder } from 'discord.js';
 import { createEmbed, successEmbed, infoEmbed, warningEmbed } from '../../utils/embeds.js';
 import { getEconomyData, setEconomyData } from '../../utils/economy.js';
 import { withErrorHandling, createError, ErrorTypes } from '../../utils/errorHandler.js';
-import { InteractionHelper } from '../../utils/interactionHelper.js';
-
-const BASE_WIN_CHANCE = 0.4;
-const CLOVER_WIN_BONUS = 0.1;
-const CHARM_WIN_BONUS = 0.08;
-const PAYOUT_MULTIPLIER = 2.0;
-const GAMBLE_COOLDOWN = 5 * 60 * 1000;
 
 export default {
-    data: new SlashCommandBuilder()
-        .setName('gamble')
-        .setDescription('Gamble your money for a chance to win more')
-        .addIntegerOption(option =>
-            option
-                .setName('amount')
-                .setDescription('Amount of cash to gamble')
-                .setRequired(true)
-                .setMinValue(1)
-        ),
+    name: 'gamble',
+    description: 'Risk your money on a 50/50 coinflip!',
 
-    execute: withErrorHandling(async (interaction, config, client) => {
-        const deferred = await InteractionHelper.safeDefer(interaction);
-        if (!deferred) return;
-            
-            const userId = interaction.user.id;
-            const guildId = interaction.guildId;
-            const betAmount = interaction.options.getInteger("amount");
-            const now = Date.now();
+    async execute(message, args) {
+        await withErrorHandling(message, async () => {
+            const userId = message.author.id;
 
-            const userData = await getEconomyData(client, guildId, userId);
-            const lastGamble = userData.lastGamble || 0;
-            let cloverCount = userData.inventory["lucky_clover"] || 0;
-            let charmCount = userData.inventory["lucky_charm"] || 0;
+            // 1. Parse and Validate Bet Amount
+            const rawBet = args[0];
 
-            if (now < lastGamble + GAMBLE_COOLDOWN) {
-                const remaining = lastGamble + GAMBLE_COOLDOWN - now;
-                const minutes = Math.floor(remaining / (1000 * 60));
-                const seconds = Math.floor((remaining % (1000 * 60)) / 1000);
-
-                throw createError(
-                    "Gamble cooldown active",
-                    ErrorTypes.RATE_LIMIT,
-                    `You need to cool down before gambling again. Wait **${minutes}m ${seconds}s**.`,
-                    { remaining, cooldownType: 'gamble' }
-                );
-            }
-
-            if (userData.wallet < betAmount) {
-                throw createError(
-                    "Insufficient cash for gamble",
-                    ErrorTypes.VALIDATION,
-                    `You only have $${userData.wallet.toLocaleString()} cash, but you are trying to bet $${betAmount.toLocaleString()}.`,
-                    { required: betAmount, current: userData.wallet }
-                );
-            }
-
-            let winChance = BASE_WIN_CHANCE;
-            let cloverMessage = "";
-            let usedClover = false;
-            let usedCharm = false;
-
-            if (cloverCount > 0) {
-                winChance += CLOVER_WIN_BONUS;
-                userData.inventory["lucky_clover"] -= 1;
-                cloverMessage = `\n🍀 **Lucky Clover Consumed:** Your win chance was boosted!`;
-                usedClover = true;
-            }
-            
-            else if (charmCount > 0) {
-                winChance += CHARM_WIN_BONUS;
-                userData.inventory["lucky_charm"] -= 1;
-                cloverMessage = `\n🍀 **Lucky Charm Used (${charmCount - 1} uses remaining):** Your win chance was boosted!`;
-                usedCharm = true;
-            }
-
-            const win = Math.random() < winChance;
-            let cashChange = 0;
-            let resultEmbed;
-
-            if (win) {
-                const amountWon = Math.floor(betAmount * PAYOUT_MULTIPLIER);
-                // Net change: the bet is replaced by the payout (bet was at stake, not pre-deducted)
-                cashChange = amountWon - betAmount;
-
-                resultEmbed = successEmbed(
-                    "🎉 You Won!",
-                    `You successfully gambled and turned your **$${betAmount.toLocaleString()}** bet into **$${amountWon.toLocaleString()}**!${cloverMessage}`,
-                );
-            } else {
-cashChange = -betAmount;
-
-                resultEmbed = warningEmbed(
-                    "💔 You Lost...",
-                    `The dice rolled against you. You lost your **$${betAmount.toLocaleString()}** bet.`,
-                );
-            }
-
-            userData.wallet = (userData.wallet || 0) + cashChange;
-userData.lastGamble = now;
-
-            await setEconomyData(client, guildId, userId, userData);
-
-            const newCash = userData.wallet;
-
-            resultEmbed.addFields({
-                name: "New Cash Balance",
-                value: `$${newCash.toLocaleString()}`,
-                inline: true,
-            });
-
-            if (usedClover) {
-                resultEmbed.setFooter({
-                    text: `You have ${userData.inventory["lucky_clover"]} Lucky Clovers left. Win chance was ${Math.round(winChance * 100)}%.`,
+            if (!rawBet) {
+                return await message.reply({
+                    embeds: [warningEmbed('🚫 Missing Bet', 'Please specify an amount to gamble.\nExample: `!gamble 500` or `!gamble all`')]
                 });
-            } else if (usedCharm) {
-                resultEmbed.setFooter({
-                    text: `You have ${userData.inventory["lucky_charm"]} Lucky Charm uses left. Win chance was ${Math.round(winChance * 100)}%.`,
+            }
+
+            // 2. Fetch User Economy Profile
+            const economy = await getEconomyData(userId);
+            let bet = 0;
+
+            // Support an "all-in" mechanic if they type !gamble all
+            if (rawBet.toLowerCase() === 'all') {
+                bet = economy ? economy.balance : 0;
+            } else {
+                bet = parseInt(rawBet);
+            }
+
+            // Validate Betting Limits
+            if (isNaN(bet) || bet < 1 || bet > 1000000000000) {
+                return await message.reply({
+                    embeds: [warningEmbed('🚫 Invalid Bet', 'Provide a valid betting amount between **$1** and **$1,000,000,000,000**.')]
+                });
+            }
+
+            // Verify User Funds
+            if (!economy || economy.balance < bet) {
+                throw createError(
+                    ErrorTypes.INSUFFICIENT_FUNDS, 
+                    `You don't have enough money! Your current balance is $${economy?.balance || 0}.`
+                );
+            }
+
+            // 3. Roll the Dice (50% Chance)
+            const isWin = Math.random() >= 0.5;
+
+            if (isWin) {
+                // Double the money: give back the bet + equal profit
+                economy.balance += bet;
+                await setEconomyData(userId, economy);
+
+                return await message.reply({
+                    embeds: [successEmbed(
+                        '🟩 Winner!',
+                        `The odds favored you! You won your bet!\n\n**Earnings:** +$${bet.toLocaleString()}\n**Current Balance:** $${economy.balance.toLocaleString()}`
+                    )]
                 });
             } else {
-                resultEmbed.setFooter({
-                    text: `Next gamble available in 5 minutes. Base win chance: ${Math.round(BASE_WIN_CHANCE * 100)}%.`,
+                // Deduct the bet amount
+                economy.balance -= bet;
+                await setEconomyData(userId, economy);
+
+                return await message.reply({
+                    embeds: [warningEmbed(
+                        '🟥 Lost!',
+                        `The house wins this round. Better luck next time!\n\n**Losses:** -$${bet.toLocaleString()}\n**Current Balance:** $${economy.balance.toLocaleString()}`
+                    )]
                 });
             }
-
-            await InteractionHelper.safeEditReply(interaction, { embeds: [resultEmbed] });
-    }, { command: 'gamble' })
+        });
+    }
 };
