@@ -37,7 +37,6 @@ export default {
                 const embeddedPayload = createEmbed({
                     title: `✉️ New Message from ${message.guild.name}`,
                     description: dmContent,
-                    footer: { text: `Sent by author profile: ${message.author.tag}` },
                     color: 0x5865F2 // Classic blurple color scheme
                 });
 
