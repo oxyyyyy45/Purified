@@ -4,11 +4,12 @@ import { getEconomyData, setEconomyData } from '../../utils/economy.js';
 import { withErrorHandling, createError, ErrorTypes } from '../../utils/errorHandler.js';
 import { logger } from '../../utils/logger.js';
 import { InteractionHelper } from '../../utils/interactionHelper.js';
-import { botConfig } from '../../config/bot.js';
 
-const WORK_COOLDOWN = botConfig.economy?.cooldowns?.work ?? 30 * 60 * 1000;
-const MIN_WORK_AMOUNT = botConfig.economy?.workMin ?? 10;
-const MAX_WORK_AMOUNT = botConfig.economy?.workMax ?? 100;
+// Set exactly to 10 minutes in milliseconds (600,000 ms)
+const WORK_COOLDOWN = 10 * 60 * 1000; 
+
+const MIN_WORK_AMOUNT = 10;
+const MAX_WORK_AMOUNT = 100;
 const LAPTOP_MULTIPLIER = 1.5;
 const WORK_JOBS = [
     "Software Developer",
@@ -63,10 +64,15 @@ export default {
                     usedConsumable = true;
                 } else {
                     const remaining = lastWork + WORK_COOLDOWN - now;
+                    
+                    // Fixed mathematical breakdown to display clean minutes and seconds remaining
+                    const remainingMinutes = Math.floor(remaining / 60000);
+                    const remainingSeconds = Math.floor((remaining % 60000) / 1000);
+
                     throw createError(
                         "Work cooldown active",
                         ErrorTypes.RATE_LIMIT,
-                        `You're working too fast! Wait **${Math.floor(remaining / 3600000)}h ${Math.floor((remaining % 3600000) / 60000)}m** before working again.`,
+                        `You're working too fast! Wait **${remainingMinutes}m ${remainingSeconds}s** before working again.`,
                         { timeRemaining: remaining, cooldownType: 'work' }
                     );
                 }
