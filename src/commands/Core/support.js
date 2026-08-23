@@ -3,7 +3,7 @@ import { createEmbed } from '../../utils/embeds.js';
 import { logger } from '../../utils/logger.js';
 
 import { InteractionHelper } from '../../utils/interactionHelper.js';
-const SUPPORT_SERVER_URL = "https://discord.gg/QnWNz2dKCE";
+const SUPPORT_SERVER_URL = "https://discord.gg/fbfHkVHPqK";
 export default {
     data: new SlashCommandBuilder()
     .setName("support")
@@ -14,7 +14,7 @@ export default {
       const supportButton = new ButtonBuilder()
         .setLabel("Join Support Server")
         .setStyle(ButtonStyle.Link)
-        .setURL(SUPPORT_SERVER_URL);
+        .setURL(discord.gg/fbfHkVHPqK);
 
       const actionRow = new ActionRowBuilder().addComponents(supportButton);
 
