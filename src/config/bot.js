@@ -172,7 +172,7 @@ export const botConfig = {
     startingBalance: 0,
 
     // Maximum bank amount before upgrades (if upgrades are used).
-    baseBankCapacity: 100000,
+    baseBankCapacity: 5000000,
 
     // Daily reward amount.
     dailyAmount: 100,
@@ -272,7 +272,7 @@ export const botConfig = {
 
     // Allowed giveaway duration range in milliseconds.
     // 300000 = 5 minutes.
-    minimumDuration: 300000,
+    minimumDuration: 1000,
     // 2592000000 = 30 days.
     maximumDuration: 2592000000,
 
@@ -649,3 +649,9 @@ export function getRandomColor() {
 }
 
 export default botConfig;
+
+// Inside your main command loading function:
+if (command.initializeEvent) {
+    command.initializeEvent(client);
+}
+
